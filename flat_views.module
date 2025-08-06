@@ -2,25 +2,7 @@
 
 use Drupal\Core\Form\FormStateInterface;
 use Drupal\node\NodeInterface;
-
-/**
- * @file
- * Primarily Drupal hooks and global API functions setup the example.
- *
- * This is the main module file for the view_actions example.
- * It implements :
- *  hook_views_api() : register this module with views api and set path
- *
- *
- */
-
-/**
- * Implements hook_views_api().
- * register with views api
- * declare the path where to find the view include files
- *
- */
-
+use Drupal\views\ViewExecutable;
 
 /**
  * Implements hook_menu().
@@ -404,5 +386,163 @@ function flat_deposit_preprocess_breadcrumb(&$variables)
       $remove = $options['attributes']['remove'];
     }
     $variables['breadcrumb'][$key] = ['text' => $link->getText(), 'url' => $link->getUrl()->toString(), 'class' => $class, 'remove' => $remove];
+  }
+}
+
+/**
+ * Implements hook_views_data_alter().
+ */
+function flat_views_views_data_alter(array &$data)
+{
+  $data['media_field_data']['flat_views_media_download_link'] = [
+    'title' => t('Download Original File'),
+    'help' => t('Provides a download link for the Original File in media.'),
+    'field' => [
+      'id' => 'flat_views_media_download_link',
+      'click sortable' => FALSE,
+      'real field' => 'mid',
+      'no database field' => TRUE,
+    ],
+    'entity_type' => 'media',
+  ];
+}
+
+/**
+ * Implements hook_views_pre_view().
+ *
+ * Hook to make the compound object members view work on the compound object as well as on any of its children.
+ *
+ */
+function flat_views_views_pre_view(\Drupal\views\ViewExecutable $view, $display_id, array &$args)
+{
+
+  if ($view->id() === 'compound_object_members' && $view->current_display === 'block_1') {
+    $route_node = \Drupal::routeMatch()->getParameter('node');
+
+    if ($route_node instanceof NodeInterface) {
+      $target_nid = NULL;
+
+      // Helper function to check if a node has the "compound object" model
+      $is_compound_model = function (NodeInterface $node): bool {
+        if ($node->hasField('field_model') && !$node->get('field_model')->isEmpty()) {
+          foreach ($node->get('field_model') as $item) {
+            // Get the target ID (term ID)
+            $tid = $item->target_id;
+            if ($tid && ($term = \Drupal::entityTypeManager()->getStorage('taxonomy_term')->load($tid))) {
+              if ($term->label() === 'Compound Object') {
+                return TRUE;
+              }
+            }
+          }
+        }
+        return FALSE;
+      };
+
+      // Case 1: This node is a compound object
+      if ($is_compound_model($route_node)) {
+        $target_nid = $route_node->id();
+      }
+
+      // Case 2: This node is a child of a compound object
+      elseif (
+        $route_node->hasField('field_member_of') &&
+        !$route_node->get('field_member_of')->isEmpty()
+      ) {
+        $parent = $route_node->get('field_member_of')->entity;
+        if ($parent instanceof NodeInterface && $is_compound_model($parent)) {
+          $target_nid = $parent->id();
+        }
+      }
+
+      // Pass the parent NID as the contextual filter argument
+      if (!empty($target_nid)) {
+        $args[0] = $target_nid;
+      }
+      if (empty($target_nid)) {
+        // Clear any arguments to prevent fallback rendering.
+        $view->args = [];
+
+        // Force the result set to be empty.
+        $view->result = [];
+        $view->executed = TRUE; // Prevents further processing.
+        return;
+      }
+    }
+  }
+}
+
+/**
+ * Implements hook_preprocess_views_view_table().
+ *
+ * Add a custom class to the current child row in the compound object members view, so that it can be highlighted
+ *
+ */
+function flat_views_preprocess_views_view_table(&$variables)
+{
+  $view = $variables['view'];
+
+  if ($view->id() == 'compound_object_members' && $view->current_display == 'block_1') {
+    // Get the current node from the route.
+    $current_node = \Drupal::routeMatch()->getParameter('node');
+    $current_node_id = null;
+    if ($current_node instanceof NodeInterface) {
+      $current_node_id = (int) $current_node->id();
+    }
+    foreach ($variables['rows'] as $row_index => &$row) {
+
+      $row_node_id = null;
+
+      // Check if the 'title' column exists and its content is available.
+      if (isset($row['columns']['title']['content'][0]['field_output']['#markup'])) {
+        $title_markup = $row['columns']['title']['content'][0]['field_output']['#markup'];
+
+        if (preg_match('/<a[^>]*href="\/node\/(\d+)"/', $title_markup, $matches)) {
+          if (isset($matches[1])) {
+            $row_node_id = (int) $matches[1]; // Cast to integer for strict comparison.
+          }
+        }
+      }
+
+      // If the current row's node ID matches the current page's node ID, add the class.
+      if ($row_node_id !== null && $current_node_id !== null && $row_node_id === $current_node_id) {
+        // Ensure the 'attributes' array exists for the row.
+        if (!isset($row['attributes'])) {
+          $row['attributes'] = new \Drupal\Core\Template\Attribute();
+        }
+        // Add the custom class.
+        $row['attributes']->addClass('current-child-row');
+      }
+    }
+  }
+}
+
+/**
+ * Implements hook_views_post_render().
+ *
+ * Restrict access to the media display view if user has no access to the media entity itself. Also issue a http 403
+ *
+ */
+function flat_views_views_post_render(ViewExecutable $view, array &$output)
+{
+  if ($view->id() === 'media_display_blocks') {
+    $account = \Drupal::currentUser();
+
+    foreach ($view->result as $row) {
+      if (isset($row->_entity) && !$row->_entity->access('view', $account)) {
+        // Replace view output with a warning message.
+        $output = [
+          '#markup' => '<div class="messages messages--error">You do not have access to this file.</div>',
+          '#allowed_tags' => ['div', 'span', 'p', 'br', 'strong', 'em'],
+          '#access' => TRUE,
+          '#type' => 'markup',
+          '#cache' => ['max-age' => 0],
+        ];
+
+        // Optionally clear the title.
+        $view->setTitle('');
+
+        return;
+      }
+    }
   }
 }

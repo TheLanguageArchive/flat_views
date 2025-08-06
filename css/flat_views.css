@@ -10,3 +10,9 @@ li.breadcrumb-exclude a {
 li.breadcrumb-exclude sup a {
     text-decoration: none;
 }
+
+tr.current-child-row {
+    background-color: #f0f8ff;
+    border: 2px solid #007acc;
+}
+
