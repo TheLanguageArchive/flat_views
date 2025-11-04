@@ -1,0 +1,10 @@
+{
+    "name": "thelanguagearchive/flat_views",
+    "description": "Drupal views for the FLAT Islandora-based repository",
+    "type": "drupal-custom-module",
+    "license": "GPL-3.0",
+    "minimum-stability": "dev",
+    "require": {
+        "drupal/core": "^10.0"
+    }
+}
